@@ -1,0 +1,65 @@
+name:                mattermonad
+version:             0.1.0.0
+github:              "iasoon/mattermonad"
+license:             BSD3
+author:              "Ilion Beyst"
+maintainer:          "ilion.beyst@gmail.com"
+copyright:           "2020 Ilion Beyst"
+
+extra-source-files:
+- README.md
+- ChangeLog.md
+
+# Metadata used when publishing your package
+# synopsis:            Short description of your package
+# category:            Web
+
+# To avoid duplicated efforts in documentation and dealing with the
+# complications of embedding Haddock markup inside cabal files, it is
+# common to point users to the README.md file.
+description:         Please see the README on GitHub at <https://github.com/iasoon/mattermonad#readme>
+
+dependencies:
+- base >= 4.7 && < 5
+- aeson >= 1.4
+- http-client
+- http-types
+- http-client-tls
+- text
+- bytestring
+- case-insensitive
+- mtl
+- template-haskell
+- websockets
+- wuss
+- yaml
+
+default-extensions:
+  - NamedFieldPuns
+  - RecordWildCards
+
+
+library:
+  source-dirs: src
+
+executables:
+  bot-monad-exe:
+    main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - mattermonad
+
+tests:
+  bot-monad-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - mattermonad
