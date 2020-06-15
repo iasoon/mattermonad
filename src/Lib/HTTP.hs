@@ -1,5 +1,4 @@
 {-# LANGUAGE NamedFieldPuns, RecordWildCards #-}
-{-# LANGUAGE OverloadedStrings #-}
 
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE RankNTypes #-}
