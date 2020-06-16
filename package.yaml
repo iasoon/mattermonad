@@ -32,6 +32,7 @@ dependencies:
 - websockets
 - wuss
 - yaml
+- reflex >= 0.7
 
 default-extensions:
   - OverloadedStrings

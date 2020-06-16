@@ -27,3 +27,13 @@ data ChannelData = ChannelData
     } deriving (Show)
 $(deriveJSON (removePrefix "chanData") ''ChannelData)
 
+data PostData = PostData
+    { postId :: Text
+    , postUserId :: Text
+    , postChannelId :: Text
+    , postRootId :: Text
+    , postParentId :: Text
+    , postMessage :: Text
+    }
+$(deriveJSON (removePrefix "post") ''PostData)
+

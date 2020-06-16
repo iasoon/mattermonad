@@ -29,7 +29,6 @@ instance Monad m => ApiRequest (SessionT m) GetChannelByName where
     type ReqResult GetChannelByName = ChannelData
 
     encodeRequest GetChannelByName { .. } =
-
         asks sessionDefaultReq <&> \req -> req
             { method = "GET"
             , path = chanPath
@@ -39,6 +38,24 @@ instance Monad m => ApiRequest (SessionT m) GetChannelByName where
 
     
     parseResult = fromJust . decode . responseBody
+
+data GetUser = GetUser
+    { getUserId :: BS.ByteString
+    }
+
+instance Monad m => ApiRequest (SessionT m) GetUser where
+    type ReqResult GetUser = User
+
+    encodeRequest GetUser { .. } =
+        asks sessionDefaultReq <&> \req -> req
+            { method = "GET"
+            , path = userPath
+            }
+        where   userPath = "/api/v4" <> "/users/" <> getUserId
+    
+    parseResult = fromJust . decode . responseBody
+
+
 
 data CreatePostReq = CreatePostReq
     { createPostChannelId :: Text
