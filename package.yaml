@@ -20,6 +20,7 @@ description:         Please see the README on GitHub at <https://github.com/iaso
 
 dependencies:
 - base >= 4.7 && < 5
+- unordered-containers
 - aeson >= 1.4
 - http-client
 - http-types
@@ -38,6 +39,7 @@ default-extensions:
   - OverloadedStrings
   - NamedFieldPuns
   - RecordWildCards
+  - LambdaCase
 
 
 library:
