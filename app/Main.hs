@@ -32,6 +32,7 @@ import Lib.Session
 import Lib.Types
 import Lib.Utils
 import Lib.WebSocket
+import qualified Lib.Schema as Schema
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS
 import Network.HTTP.Types.Header (ResponseHeaders)
@@ -40,7 +41,8 @@ import qualified Reflex as R
 import qualified Reflex.Host.Headless as R
 
 main :: IO ()
-main = R.runHeadlessApp botMonad
+-- main = R.runHeadlessApp botMonad
+main = Schema.test
 
 botMonad :: forall t m. R.MonadHeadlessApp t m => m (R.Event t ())
 botMonad = mdo
