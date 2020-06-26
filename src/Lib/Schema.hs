@@ -24,33 +24,7 @@ import qualified Data.Char as Char
 
 import GHC.TypeLits
 
-data SchemaType = StringType
-                | NumberType
-                | IntegerType
-                | BooleanType
-                | ObjectType
-                | ArrayType
-                | NullType
-                | AnyType
-                deriving (Show)
-
-instance A.FromJSON SchemaType where
-    parseJSON = A.withText "SchemaType" $ \case
-        "string"  -> return StringType
-        "number"  -> return NumberType
-        "integer" -> return IntegerType
-        "boolean" -> return BooleanType
-        "object"  -> return ObjectType
-        "array"   -> return ArrayType
-        "null"    -> return NullType
-        "any"     -> return AnyType
-        t         -> fail $ "not a valid type: " ++ T.unpack t
-
-data Property = Property
-    { propertyName :: Text
-    , propertyType :: SchemaType
-    } deriving (Show)
-$(A.deriveFromJSON (removePrefix "property") ''Property)
+import OpenAPI.Schema
 
 propReprType :: Property -> Type
 propReprType p = case propertyType p of
@@ -63,17 +37,6 @@ propReprType p = case propertyType p of
     AnyType     -> ConT ''A.Value
     _ -> error ("no tpe  repr for " ++ show (propertyType p))
 
-data ObjectSchema = ObjectSchema
-    { objectProperties :: [Property]
-    } deriving (Show)
-
-parseProperty :: Text -> A.Value -> A.Parser Property
-parseProperty propertyName = A.withObject (T.unpack propertyName) $ \props -> do
-    propertyType <- props .: "type"
-    return Property {..}
-
-parseProperties :: A.Value -> A.Parser [Property]
-parseProperties = A.withObject "properties" $ mapM (uncurry parseProperty) . M.toList
 
 readSchema :: String ->  Q Schema
 readSchema = runIO . Yaml.decodeFileThrow
@@ -110,27 +73,5 @@ camelCase (s:ss) = concat $ s:(map capitalize ss)
     where   capitalize "" = ""
             capitalize (c:cs) = (Char.toUpper c):cs
 
-instance A.FromJSON ObjectSchema where
-    parseJSON = A.withObject "ObjectSchema" $ \o -> do
-        objectProperties <- o .: "properties" >>= parseProperties
-        return ObjectSchema {..}
-
 
 type Schema = M.HashMap String ObjectSchema
-
-test :: IO ()
-test = do
-    schema :: Schema <- Yaml.decodeFileThrow "schema.yaml"
-    putStrLn $ show schema
-
-
-type family PropertyType (ty :: *) (name :: Symbol) :: *
-
-makePropValue :: Name -> [(String, Name)]-> Q [Dec]
-makePropValue name assocs = do
-    -- sym <- newName "sym"
-    -- let head = TypeFamilyHead name [(KindedTV sym (ConT ''Symbol))] (KindSig StarT) Nothing
-    let propType = \t -> AppT (AppT (ConT ''PropertyType) (ConT name)) t
-    let instDecls = flip map assocs $ \(str, tyname) -> 
-            TySynInstD $ TySynEqn Nothing (propType (LitT $ StrTyLit str)) (ConT tyname)
-    return $ instDecls

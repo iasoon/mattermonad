@@ -41,8 +41,7 @@ import qualified Reflex as R
 import qualified Reflex.Host.Headless as R
 
 main :: IO ()
--- main = R.runHeadlessApp botMonad
-main = Schema.test
+main = R.runHeadlessApp botMonad
 
 botMonad :: forall t m. R.MonadHeadlessApp t m => m (R.Event t ())
 botMonad = mdo
