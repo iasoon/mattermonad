@@ -28,6 +28,7 @@ dependencies:
 - text
 - bytestring
 - case-insensitive
+- transformers
 - mtl
 - template-haskell
 - websockets

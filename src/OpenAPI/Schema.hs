@@ -1,5 +1,5 @@
 {-# LANGUAGE TemplateHaskell #-}
-
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module OpenAPI.Schema where
 
@@ -10,131 +10,67 @@ import qualified Data.Yaml as Yaml
 import qualified Data.HashMap.Strict as M
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Aeson ((.:), (.:?))
+import Data.Aeson ((.:), (.:?), (<?>))
 import Lib.Utils
 import Control.Monad (forM)
 import Data.Maybe (fromMaybe)
+import Control.Monad.Trans.Maybe
+import Control.Monad.Trans (lift)
 
 test :: IO ApiSpec
-test = Yaml.decodeFileThrow "schema.yaml"
+test = Yaml.decodeFileThrow "mattermost-openapi-v4.yaml"
 
-data SchemaType = StringType
-                | NumberType
-                | IntegerType
-                | BooleanType
-                | ObjectType
-                | ArrayType
-                | NullType
-                | AnyType
-                deriving (Show)
+users :: IO Operations
+users = Yaml.decodeFileThrow "users.yaml"
 
-instance A.FromJSON SchemaType where
-    parseJSON = A.withText "SchemaType" $ \case
-        "string"  -> return StringType
-        "number"  -> return NumberType
-        "integer" -> return IntegerType
-        "boolean" -> return BooleanType
-        "object"  -> return ObjectType
-        "array"   -> return ArrayType
-        "null"    -> return NullType
-        "any"     -> return AnyType
-        t         -> fail $ "not a valid type: " ++ T.unpack t
+data ApiSpec = ApiSpec
+    { apiSpecComponents :: Components
+    , apiSpecOperations :: Operations
+    } deriving (Show)
+
+
+newtype Operations = Operations { fromList :: [Operation] } deriving (Show)
+
+instance A.FromJSON Operations where
+    parseJSON = fmap Operations . parsePaths
 
 data ValueSchema = ObjectTy ObjectSchema
                  | ArrayTy ArraySchema
-                 | SchemaTy SchemaType
+                 | StringTy
+                 | IntegerTy
+                 | NumberTy
+                 | BoolTy
                  deriving (Show)
 
 instance A.FromJSON ValueSchema where
     parseJSON value = do
-        ty <- A.withObject "schema" (.: "type") value
-        case ty of
-            ObjectType -> ObjectTy <$> A.parseJSON value
-            ArrayType -> ArrayTy <$> A.parseJSON value
-            ty -> return $ SchemaTy ty
+        tyname :: Text <- A.withObject "schema" (.: "type") value
+        case tyname of
+            "string"  -> return StringTy
+            "number"  -> return NumberTy
+            "integer" -> return IntegerTy
+            "boolean" -> return BoolTy
+            "object"  -> parseSchema ObjectTy
+            "array"   -> parseSchema ArrayTy
+        where parseSchema con = con <$> A.parseJSON value
 
 data ObjectSchema = ObjectSchema
-    { objectProperties :: [Property]
+    { objectProperties :: M.HashMap Text (RefOrLit ValueSchema)
     } deriving (Show)
 
 instance A.FromJSON ObjectSchema where
     parseJSON = A.withObject "ObjectSchema" $ \o -> do
-        objectProperties <- o .: "properties" >>= parseProperties
+        objectProperties <- fromMaybe M.empty <$> o .:? "properties"
         return ObjectSchema {..}
 
 data ArraySchema = ArraySchema
-    { arrayItems :: ValueSchema
+    { arrayItems :: RefOrLit ValueSchema
     } deriving (Show)
 
 instance A.FromJSON ArraySchema where
     parseJSON = A.withObject "ArraySchema" $ \o -> do
         arrayItems <- o .: "items"
         return ArraySchema {..}
-
-
-data Property = Property
-    { propertyName :: Text
-    , propertyType :: SchemaType
-    } deriving (Show)
-
-parseProperty :: Text -> A.Value -> A.Parser Property
-parseProperty propertyName = A.withObject (T.unpack propertyName) $ \props -> do
-    propertyType <- props .: "type"
-    return Property {..}
-
-parseProperties :: A.Value -> A.Parser [Property]
-parseProperties = A.withObject "properties" $ mapM (uncurry parseProperty) . M.toList
-
-data Operation = Operation
-    { operationMethod :: Text
-    , operationPath :: Text
-    , operationParameters :: [Parameter]
-    , operationRequestBody :: Maybe RequestBody
-    , operationResponses :: M.HashMap Text (RefOrLit Response)
-    } deriving (Show)
-
-data RequestBody = RequestBody
-    { requestBodySchema :: ValueSchema
-    , requestBodyRequired :: Bool
-    } deriving (Show)
-
-instance A.FromJSON RequestBody where
-    parseJSON = A.withObject "RequestBody" $ \obj -> do
-        requestBodyRequired <- fromMaybe False <$> obj .:? "required"
-        requestBodySchema <- obj .: "content"
-            >>= A.withObject "content" (.: "application/json")
-            >>= A.withObject "" (.: "schema")
-            >>= A.parseJSON
-        return RequestBody { .. }
-
-data Parameter = Parameter
-    { parameterName :: Text
-    , parameterIn :: Text
-    , parameterRequired :: Bool
-    } deriving (Show)
-
-instance A.FromJSON Parameter where
-    parseJSON = A.withObject "RequestParameter" $ \obj -> do
-        parameterName <- obj .: "name"
-        parameterIn <- obj .: "in"
-        parameterRequired <- fromMaybe False <$> obj .:? "required"
-        return Parameter { .. }
-
-
-data Response = Response
-    { responseDescription::Text
-    , responseContentSchema :: RefOrLit ValueSchema
-    } deriving (Show)
-
-instance A.FromJSON Response where
-    parseJSON = A.withObject "Response" $ \ obj -> do
-        responseDescription <- obj .: "description"
-        responseContentSchema <- obj .: "content"
-            >>= A.withObject "content" (.: "application/json")
-            >>= A.withObject "" (.: "schema")
-            >>= A.parseJSON
-        return Response { .. }
-
 
 data RefOrLit a = Ref Text | Lit a deriving (Show)
 
@@ -151,22 +87,78 @@ data Components = Components
     { componentsSchemas :: M.HashMap Text ObjectSchema
     } deriving (Show)
 
-data ApiSpec = ApiSpec
-    { apiSpecComponents :: Components
-    , apiSpecOperations :: [Operation]
-    } deriving (Show)
-
 instance A.FromJSON ApiSpec where
     parseJSON = A.withObject "ApiSpec" $ \obj -> do
         apiSpecComponents <- obj .: "components"
-        apiSpecOperations <- obj .: "paths" >>= parsePaths
+        apiSpecOperations <- obj .: "paths"
         return ApiSpec { .. }
 
+data Operation = Operation
+    { operationMethod :: Text
+    , operationPath :: Text
+    , operationParameters :: [Parameter]
+    , operationRequestBody :: Maybe RequestBody
+    , operationResponses :: M.HashMap Text (RefOrLit Response)
+    } deriving (Show)
+
+data RequestBody = RequestBody
+    { requestBodySchema :: RefOrLit ValueSchema
+    , requestBodyContentType :: Text
+    , requestBodyRequired :: Bool
+    } deriving (Show)
+
+instance A.FromJSON RequestBody where
+    parseJSON = A.withObject "RequestBody" $ \obj -> do
+        (ty, typeObj) <- obj .: "content"
+            >>= A.withObject "content" fromSingleton
+        schema <- return typeObj
+            >>= A.withObject "" (.: "schema")
+        requestBodyRequired <- fromMaybe False <$> obj .:? "required"
+
+        return RequestBody
+            { requestBodySchema = schema
+            , requestBodyContentType = ty
+            , ..
+            }
+            where   fromSingleton o = let [entry] = M.toList o in return entry
+
+data Parameter = Parameter
+    { parameterName :: Text
+    , parameterIn :: Text
+    , parameterRequired :: Bool
+    } deriving (Show)
+
+instance A.FromJSON Parameter where
+    parseJSON = A.withObject "RequestParameter" $ \obj -> do
+        parameterName <- obj .: "name"
+        parameterIn <- obj .: "in"
+        parameterRequired <- fromMaybe False <$> obj .:? "required"
+        return Parameter { .. }
+
+data Response = Response
+    { responseDescription::Text
+    , responseContentSchema :: Maybe (RefOrLit ValueSchema)
+    } deriving (Show)
+
+(>>=?) :: Monad m => MaybeT m a -> (a -> m (Maybe b)) -> MaybeT m b
+(>>=?) m f = m >>= MaybeT . f
+
+instance A.FromJSON Response where
+    parseJSON = A.withObject "Response" $ \ obj -> do
+        responseDescription <- obj .: "description"
+        responseContentSchema <- runMaybeT $ return obj
+            >>=? (.:? "content")
+            >>=? A.withObject "content" (.:? "application/json")
+            >>=? A.withObject "" (.:? "schema")
+        return Response { .. }
+
+withMapEntries :: (Text ->  A.Value -> A.Parser a) -> A.Value -> A.Parser [a]
+withMapEntries f = A.withObject "map object" (mapM parseEntry . M.toList)
+    where   parseEntry (k, v) = f k v <?> A.Key k
+
 parsePaths :: A.Value -> A.Parser [Operation]
-parsePaths = A.withObject "paths" $ 
-    fmap concat .mapM (uncurry parsePathOps) . M.toList
-    where   parsePathOps path = A.withObject (T.unpack path)
-                (mapM (uncurry (parseOp path)) . M.toList)
+parsePaths = fmap concat . withMapEntries parsePathOps
+    where   parsePathOps path = withMapEntries (parseOp path)
 
 parseOp :: Text -> Text -> A.Value -> A.Parser Operation
 parseOp path method = A.withObject (T.unpack method) $ \obj -> do
@@ -177,6 +169,4 @@ parseOp path method = A.withObject (T.unpack method) $ \obj -> do
         operationMethod = method
     return Operation { .. }
 
-
-$(A.deriveFromJSON (removePrefix "property") ''Property)
 $(A.deriveFromJSON (removePrefix "components") ''Components)

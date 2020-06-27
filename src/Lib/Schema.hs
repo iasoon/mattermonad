@@ -26,41 +26,45 @@ import GHC.TypeLits
 
 import OpenAPI.Schema
 
-propReprType :: Property -> Type
-propReprType p = case propertyType p of
-    StringType  -> ConT ''Text
-    NumberType  -> ConT ''Double
-    IntegerType -> ConT ''Int
-    BooleanType -> ConT ''Bool
-    ArrayType   -> ConT ''A.Array
-    ObjectType  -> ConT ''A.Object
-    AnyType     -> ConT ''A.Value
-    _ -> error ("no tpe  repr for " ++ show (propertyType p))
+type Property = (Text, RefOrLit SchemaType)
+
+propReprType :: RefOrLit SchemaType -> Type
+propReprType ty = case ty of
+    Ref ref -> ConT ''A.Value
+    Lit lit -> case lit of
+        StringType  -> ConT ''Text
+        NumberType  -> ConT ''Double
+        IntegerType -> ConT ''Int
+        BooleanType -> ConT ''Bool
+        ArrayType   -> ConT ''A.Array
+        ObjectType  -> ConT ''A.Object
+        AnyType     -> ConT ''A.Value
+        _ -> error ("no tpe  repr for " ++ show ty)
 
 
 readSchema :: String ->  Q Schema
 readSchema = runIO . Yaml.decodeFileThrow
 
-genDataTypes :: String -> Q [Dec]
-genDataTypes path = do
-    schema <- readSchema "schema.yaml"
-    forM (M.toList schema) $ \(name, objSchema) -> return $ objectDatatype (name) objSchema
+-- genDataTypes :: String -> Q [Dec]
+-- genDataTypes path = do
+--     schema <- readSchema "schema.yaml"
+--     forM (M.toList schema) $ \(name, objSchema) -> return $ objectDatatype (name) objSchema
 
 
-objectDatatype :: String -> ObjectSchema -> Dec
-objectDatatype objName schema = 
-    let name = mkName objName 
-        propName = camelCase . ((unSnakeCase objName) ++) . unSnakeCase
-    in
-    DataD [] name [] Nothing 
-        [ RecC name $ map (propVarBangType propName) $ objectProperties schema]
-        []
+-- objectDatatype :: String -> ObjectSchema -> Dec
+-- objectDatatype objName schema = 
+--     let name = mkName objName 
+--         propName = camelCase . ((unSnakeCase objName) ++) . unSnakeCase
+--     in
+--     DataD [] name [] Nothing 
+--         [ RecC name $ map (propVarBangType propName) $ M.toList $ objectProperties schema]
+--         []
 
 propVarBangType :: (String -> String) -> Property -> VarBangType
-propVarBangType propName prop = (name, bang, ty)
-    where name = mkName $ propName $ T.unpack $ propertyName prop
+propVarBangType nameF (propName, propType) = (name, bang, ty)
+    where name = mkName $ nameF $ T.unpack $ propName
           bang = Bang NoSourceUnpackedness NoSourceStrictness
-          ty   = propReprType prop
+          ty   = propReprType propType
 
 unSnakeCase :: String -> [String]
 unSnakeCase [] = []
