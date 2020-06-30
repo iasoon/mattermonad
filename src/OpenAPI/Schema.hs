@@ -1,31 +1,32 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE DeriveAnyClass #-}
 
 module OpenAPI.Schema where
 
-import qualified Data.Aeson as A
-import qualified Data.Aeson.Types as A
-import qualified Data.Aeson.TH as A (deriveFromJSON)
-import qualified Data.HashMap.Strict as M
-import Data.Text (Text)
-import qualified Data.Text as T
-import Data.Aeson ((.:), (.:?), (<?>))
-import Lib.Utils
-import Control.Monad (forM)
-import Data.Maybe (fromMaybe)
-import Control.Monad.Trans.Maybe
-import Control.Monad.Trans (lift)
+import qualified Data.Aeson                    as A
+import qualified Data.Aeson.Types              as A
+import qualified Data.Aeson.TH                 as A
+                                                ( deriveFromJSON )
+import qualified Data.HashMap.Strict           as M
+import           Data.Text                      ( Text )
+import qualified Data.Text                     as T
+import           Data.Aeson                     ( (.:)
+                                                , (.:?)
+                                                , (<?>)
+                                                )
+import           Lib.Utils
+import           Control.Monad                  ( forM )
+import           Data.Maybe                     ( fromMaybe )
+import           Control.Monad.Trans.Maybe
+import           Data.Hashable
+import           Data.Functor                   ( (<&>) )
+import           Control.Monad.Trans            ( lift )
 
 data ApiSpec = ApiSpec
     { apiSpecComponents :: Components
     , apiSpecOperations :: Operations
     } deriving (Show)
-
-
-newtype Operations = Operations { fromList :: [Operation] } deriving (Show)
-
-instance A.FromJSON Operations where
-    parseJSON = fmap Operations . parsePaths
 
 data ValueSchema = ObjectTy ObjectSchema
                  | ArrayTy ArraySchema
@@ -56,7 +57,7 @@ data ObjectSchema = ObjectSchema
 instance A.FromJSON ObjectSchema where
     parseJSON = A.withObject "ObjectSchema" $ \o -> do
         objectProperties <- fromMaybe M.empty <$> o .:? "properties"
-        return ObjectSchema {..}
+        return ObjectSchema { .. }
 
 data ArraySchema = ArraySchema
     { arrayItems :: RefOrLit ValueSchema
@@ -65,7 +66,7 @@ data ArraySchema = ArraySchema
 instance A.FromJSON ArraySchema where
     parseJSON = A.withObject "ArraySchema" $ \o -> do
         arrayItems <- o .: "items"
-        return ArraySchema {..}
+        return ArraySchema { .. }
 
 data RefOrLit a = Ref Text | Lit a deriving (Show)
 
@@ -88,14 +89,6 @@ instance A.FromJSON ApiSpec where
         apiSpecOperations <- obj .: "paths"
         return ApiSpec { .. }
 
-data Operation = Operation
-    { operationMethod :: Text
-    , operationPath :: Text
-    , operationParameters :: [Parameter]
-    , operationRequestBody :: Maybe RequestBody
-    , operationResponses :: M.HashMap Text (RefOrLit Response)
-    } deriving (Show)
-
 data RequestBody = RequestBody
     { requestBodySchema :: RefOrLit ValueSchema
     , requestBodyContentType :: Text
@@ -104,30 +97,30 @@ data RequestBody = RequestBody
 
 instance A.FromJSON RequestBody where
     parseJSON = A.withObject "RequestBody" $ \obj -> do
-        (ty, typeObj) <- obj .: "content"
-            >>= A.withObject "content" fromSingleton
-        schema <- return typeObj
-            >>= A.withObject "" (.: "schema")
+        (ty, typeObj) <-
+            obj .: "content" >>= A.withObject "content" fromSingleton
+        schema              <- A.withObject "" (.: "schema") typeObj
         requestBodyRequired <- fromMaybe False <$> obj .:? "required"
 
-        return RequestBody
-            { requestBodySchema = schema
-            , requestBodyContentType = ty
-            , ..
-            }
-            where   fromSingleton o = let [entry] = M.toList o in return entry
+        return RequestBody { requestBodySchema      = schema
+                           , requestBodyContentType = ty
+                           , ..
+                           }
+        where fromSingleton o = let [entry] = M.toList o in return entry
 
 data Parameter = Parameter
     { parameterName :: Text
     , parameterIn :: Text
     , parameterRequired :: Bool
+    , parameterSchema :: Maybe SchemaValue
     } deriving (Show)
 
 instance A.FromJSON Parameter where
     parseJSON = A.withObject "RequestParameter" $ \obj -> do
-        parameterName <- obj .: "name"
-        parameterIn <- obj .: "in"
+        parameterName     <- obj .: "name"
+        parameterIn       <- obj .: "in"
         parameterRequired <- fromMaybe False <$> obj .:? "required"
+        parameterSchema   <- obj .:? "schema"
         return Parameter { .. }
 
 data Response = Response
@@ -139,28 +132,67 @@ data Response = Response
 (>>=?) m f = m >>= MaybeT . f
 
 instance A.FromJSON Response where
-    parseJSON = A.withObject "Response" $ \ obj -> do
-        responseDescription <- obj .: "description"
-        responseContentSchema <- runMaybeT $ return obj
+    parseJSON = A.withObject "Response" $ \obj -> do
+        responseDescription   <- obj .: "description"
+        responseContentSchema <-
+            runMaybeT
+            $    return obj
             >>=? (.:? "content")
             >>=? A.withObject "content" (.:? "application/json")
             >>=? A.withObject "" (.:? "schema")
         return Response { .. }
 
-withMapEntries :: (Text ->  A.Value -> A.Parser a) -> A.Value -> A.Parser [a]
+withMapEntries :: (Text -> A.Value -> A.Parser a) -> A.Value -> A.Parser [a]
 withMapEntries f = A.withObject "map object" (mapM parseEntry . M.toList)
-    where   parseEntry (k, v) = f k v <?> A.Key k
+    where parseEntry (k, v) = f k v <?> A.Key k
+
+newtype Operations = Operations (M.HashMap OperationKey Operation)
+    deriving (Show)
+
+data OperationKey = OperationKey
+    { opKeyPath :: Text
+    , opKeyMethod :: Text
+    } deriving (Show, Eq)
+
+instance Hashable OperationKey where
+    hashWithSalt salt OperationKey { opKeyPath, opKeyMethod } =
+        salt `hashWithSalt` opKeyPath `hashWithSalt` opKeyMethod
+
+data Operation = Operation
+    { operationMethod :: Text
+    , operationPath :: Text
+    , operationParameters :: [Parameter]
+    , operationRequestBody :: Maybe RequestBody
+    , operationResponses :: M.HashMap Text (RefOrLit Response)
+    } deriving (Show)
+
+getOpKey :: Operation -> OperationKey
+getOpKey op = OperationKey { opKeyPath   = operationPath op
+                           , opKeyMethod = operationMethod op
+                           }
+
+opKey :: Text -> Text -> OperationKey
+opKey method path = OperationKey { opKeyPath = path, opKeyMethod = method }
+
+opsFromList :: [Operation] -> Operations
+opsFromList = Operations . M.fromList . map (\op -> (getOpKey op, op))
+
+findOp :: OperationKey -> Operations -> Maybe Operation
+findOp key (Operations m) = M.lookup key m
+
+instance A.FromJSON Operations where
+    parseJSON = fmap opsFromList . parsePaths
 
 parsePaths :: A.Value -> A.Parser [Operation]
 parsePaths = fmap concat . withMapEntries parsePathOps
-    where   parsePathOps path = withMapEntries (parseOp path)
+    where parsePathOps path = withMapEntries (parseOp path)
 
 parseOp :: Text -> Text -> A.Value -> A.Parser Operation
 parseOp path method = A.withObject (T.unpack method) $ \obj -> do
-    operationParameters <- fromMaybe [] <$> obj .:? "parameters"
+    operationParameters  <- fromMaybe [] <$> obj .:? "parameters"
     operationRequestBody <- obj .:? "requestBody"
-    operationResponses <- obj .: "responses"
-    let operationPath = path
+    operationResponses   <- obj .: "responses"
+    let operationPath   = path
         operationMethod = method
     return Operation { .. }
 
