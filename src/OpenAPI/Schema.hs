@@ -6,7 +6,6 @@ module OpenAPI.Schema where
 import qualified Data.Aeson as A
 import qualified Data.Aeson.Types as A
 import qualified Data.Aeson.TH as A (deriveFromJSON)
-import qualified Data.Yaml as Yaml
 import qualified Data.HashMap.Strict as M
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -16,12 +15,6 @@ import Control.Monad (forM)
 import Data.Maybe (fromMaybe)
 import Control.Monad.Trans.Maybe
 import Control.Monad.Trans (lift)
-
-test :: IO ApiSpec
-test = Yaml.decodeFileThrow "mattermost-openapi-v4.yaml"
-
-users :: IO Operations
-users = Yaml.decodeFileThrow "users.yaml"
 
 data ApiSpec = ApiSpec
     { apiSpecComponents :: Components
@@ -41,6 +34,8 @@ data ValueSchema = ObjectTy ObjectSchema
                  | NumberTy
                  | BoolTy
                  deriving (Show)
+
+type SchemaValue = RefOrLit ValueSchema
 
 instance A.FromJSON ValueSchema where
     parseJSON value = do
