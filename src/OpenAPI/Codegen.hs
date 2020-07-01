@@ -89,12 +89,19 @@ genComponent apiSpec (SchemaComponent key) = do
 objectDecl :: Name -> ObjectSchema -> Generator Dec
 objectDecl name schema =
     let objName  = nameBase name
-        propName = camelCase . ((decapitalize objName) :) . unSnakeCase
+        propName = camelCase . (decapitalize objName :) . unSnakeCase
     in  do
-            props <-
-                mapM (propVarBangType propName) $ M.toList $ objectProperties
-                    schema
+            props <- mapM (mkPropField propName) $ M.toList $ objectProperties
+                schema
             return $ DataD [] name [] Nothing [RecC name props] []
+
+mkPropField
+    :: (String -> String) -> (Text, SchemaValue) -> Generator VarBangType
+mkPropField nameF (propName, propType) = do
+    ty <- makeType name propType
+    return $ recordField name ty
+    where name = nameF . T.unpack $ propName
+
 
 genOperation :: ApiSpec -> OperationKey -> Name -> Generator Dec
 genOperation spec opKey name = do
@@ -110,9 +117,9 @@ genOperation spec opKey name = do
                 Nothing      -> return paramProps
                 Just reqBody -> do
                     ty <- tyRequired (requestBodyRequired reqBody) <$> makeType
-                        (mkName . capitalize . propName $ "payload")
+                        (propName $ "payload")
                         (requestBodySchema reqBody)
-                    let field = recordField (mkName $ propName "payload") ty
+                    let field = recordField (propName "payload") ty
                     return $ field : paramProps
             return $ DataD [] name [] Nothing [RecC name props] []
 
@@ -121,37 +128,37 @@ mkParamField nameF param = do
     ty <- tyRequired (parameterRequired param) <$> paramTy param
     return $ recordField name ty
   where
-    name    = mkName $ nameF $ T.unpack $ parameterName param
+    name    = nameF $ T.unpack $ parameterName param
     paramTy = maybe (pure $ ConT ''Text) getType . parameterSchema
 
-recordField :: Name -> Type -> VarBangType
-recordField name ty = (name, bang, ty)
+recordField :: String -> Type -> VarBangType
+recordField name ty = (mkName name, bang, ty)
     where bang = Bang NoSourceUnpackedness NoSourceStrictness
 
 tyRequired :: Bool -> Type -> Type
 tyRequired True  = id
 tyRequired False = AppT (ConT ''Maybe)
 
-propVarBangType
-    :: (String -> String) -> (Text, SchemaValue) -> Generator VarBangType
-propVarBangType nameF (propName, propType) = do
-    ty <- getType propType
-    return $ recordField name ty
-    where name = mkName . nameF . T.unpack $ propName
 
 getType :: SchemaValue -> Generator Type
-getType (Lit lit ) = return $ valueSchemaRepr lit
+getType (Lit lit ) = return $ simpleType lit
 getType (Ref path) = do
     enqueue (QueueRef path)
     let SchemaComponent compName = parseSchemaComponent $ T.unpack path
     let tyName                   = mkName compName
     return $ ConT tyName
 
-makeType :: Name -> SchemaValue -> Generator Type
-makeType tyName (Lit (ObjectTy schema)) = do
-    enqueue (QueueObj tyName schema)
-    return $ ConT tyName
-makeType _ (Lit lit ) = return $ valueSchemaRepr lit
+makeType :: String -> SchemaValue -> Generator Type
+makeType tyName (Lit (ObjectTy schema)) = if M.null $ objectProperties schema
+    then return $ ConT ''A.Object
+    else do
+        let name = mkName $ capitalize tyName
+        enqueue (QueueObj name schema)
+        return $ ConT name
+makeType tyName (Lit (ArrayTy schema)) = do
+    itemTy <- makeType tyName $ arrayItems schema
+    return $ AppT ListT itemTy
+makeType _ (Lit lit ) = return $ simpleType lit
 makeType _ (Ref path) = do
     enqueue (QueueRef path)
     let SchemaComponent compName = parseSchemaComponent $ T.unpack path
@@ -162,13 +169,13 @@ lookupRefName :: Text -> Generator (Maybe Name)
 lookupRefName ref =
     Generator $ fmap tyName . M.lookup ref . generatorTypeMap <$> get
 
-valueSchemaRepr :: ValueSchema -> Type
-valueSchemaRepr StringTy               = ConT ''Text
-valueSchemaRepr IntegerTy              = ConT ''Int
-valueSchemaRepr NumberTy               = ConT ''Double
-valueSchemaRepr BoolTy                 = ConT ''Bool
-valueSchemaRepr (ArrayTy  arraySchema) = ConT ''A.Array
-valueSchemaRepr (ObjectTy objSchema  ) = ConT ''A.Object
+simpleType :: ValueSchema -> Type
+simpleType StringTy     = ConT ''Text
+simpleType IntegerTy    = ConT ''Int
+simpleType NumberTy     = ConT ''Double
+simpleType BoolTy       = ConT ''Bool
+simpleType (ObjectTy _) = ConT ''A.Object
+simpleType (ArrayTy  _) = ConT ''A.Array
 
 splitOn :: Char -> String -> [String]
 splitOn _ []       = []
