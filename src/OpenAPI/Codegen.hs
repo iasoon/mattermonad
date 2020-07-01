@@ -20,14 +20,30 @@ apiSpec = Yaml.decodeFileThrow "mattermost-openapi-v4.yaml"
 
 data GeneratorState = GeneratorState
     { generatorTypeMap :: M.HashMap Text TyProps
-    , generatorQueue :: [Text]
+    , generatorQueue :: [QueueElem]
     } deriving (Show)
 
-emptyState = GeneratorState { generatorTypeMap = M.empty, generatorQueue = [] }
+data QueueElem = QueueRef Text | QueueObj Name ObjectSchema deriving (Show)
 
 data TyProps = TyProps
     { tyName :: Name
     } deriving (Show)
+
+emptyState = GeneratorState { generatorTypeMap = M.empty, generatorQueue = [] }
+
+enqueue :: QueueElem -> Generator ()
+enqueue elem = Generator $ modify $ \state ->
+    state { generatorQueue = elem : generatorQueue state }
+
+popQueue :: Generator (Maybe QueueElem)
+popQueue = Generator $ do
+    state <- get
+    case generatorQueue state of
+        []            -> return Nothing
+        (item : rest) -> do
+            put $ state { generatorQueue = rest }
+            return $ Just item
+
 
 runGen :: Generator a -> Q (a, GeneratorState)
 runGen (Generator gen) = runStateT gen emptyState
@@ -39,29 +55,26 @@ newtype Generator a = Generator (StateT GeneratorState Q a)
 data SchemaComponent = SchemaComponent String
                      deriving (Show)
 
+finishQueue :: ApiSpec -> Generator [Dec]
+finishQueue spec = do
+    res <- popQueue
+    case res of
+        Nothing   -> return []
+        Just item -> do
+            dec <- case item of
+                QueueRef path ->
+                    let comp = parseSchemaComponent $ T.unpack path
+                    in  genComponent spec comp
+                QueueObj name schema -> objectDecl name schema
+            fmap (dec :) $ finishQueue spec
+
+
 parseSchemaComponent :: String -> SchemaComponent
 parseSchemaComponent str = case splitOn '/' str of
     ["#", "components", "schemas", name] -> SchemaComponent name
     _ -> error "unknown component"
 
-genQueue :: ApiSpec -> Generator [Dec]
-genQueue spec = do
-    res <- popQueue
-    case res of
-        Nothing   -> return []
-        Just item -> do
-            let comp = parseSchemaComponent $ T.unpack item
-            dec <- genComponent spec comp
-            fmap (dec :) $ genQueue spec
 
-popQueue :: Generator (Maybe Text)
-popQueue = Generator $ do
-    state <- get
-    case generatorQueue state of
-        []            -> return Nothing
-        (item : rest) -> do
-            put $ state { generatorQueue = rest }
-            return $ Just item
 
 genComponent :: ApiSpec -> SchemaComponent -> Generator Dec
 genComponent apiSpec (SchemaComponent key) = do
@@ -91,39 +104,59 @@ genOperation spec opKey name = do
     case val of
         Nothing       -> fail "operation schema not found"
         Just opSchema -> do
-            props <- mapM (mkParamField propName) $ operationParameters opSchema
+            paramProps <- mapM (mkParamField propName)
+                $ operationParameters opSchema
+            props <- case operationRequestBody opSchema of
+                Nothing      -> return paramProps
+                Just reqBody -> do
+                    ty <- tyRequired (requestBodyRequired reqBody) <$> makeType
+                        (mkName . capitalize . propName $ "payload")
+                        (requestBodySchema reqBody)
+                    let field = recordField (mkName $ propName "payload") ty
+                    return $ field : paramProps
             return $ DataD [] name [] Nothing [RecC name props] []
 
 mkParamField :: (String -> String) -> Parameter -> Generator VarBangType
 mkParamField nameF param = do
-    baseTy <- maybe (pure $ ConT ''Text) getType (parameterSchema param)
-    let ty = if parameterRequired param then baseTy else maybeTy baseTy
-    return (name, bang, ty)
+    ty <- tyRequired (parameterRequired param) <$> paramTy param
+    return $ recordField name ty
   where
     name    = mkName $ nameF $ T.unpack $ parameterName param
-    bang    = Bang NoSourceUnpackedness NoSourceStrictness
-    maybeTy = AppT (ConT ''Maybe)
+    paramTy = maybe (pure $ ConT ''Text) getType . parameterSchema
+
+recordField :: Name -> Type -> VarBangType
+recordField name ty = (name, bang, ty)
+    where bang = Bang NoSourceUnpackedness NoSourceStrictness
+
+tyRequired :: Bool -> Type -> Type
+tyRequired True  = id
+tyRequired False = AppT (ConT ''Maybe)
 
 propVarBangType
     :: (String -> String) -> (Text, SchemaValue) -> Generator VarBangType
 propVarBangType nameF (propName, propType) = do
     ty <- getType propType
-    return (name, bang, ty)
-  where
-    name = mkName $ nameF $ T.unpack $ propName
-    bang = Bang NoSourceUnpackedness NoSourceStrictness
+    return $ recordField name ty
+    where name = mkName . nameF . T.unpack $ propName
 
 getType :: SchemaValue -> Generator Type
 getType (Lit lit ) = return $ valueSchemaRepr lit
 getType (Ref path) = do
-    enqueue path
+    enqueue (QueueRef path)
     let SchemaComponent compName = parseSchemaComponent $ T.unpack path
     let tyName                   = mkName compName
     return $ ConT tyName
 
-enqueue :: Text -> Generator ()
-enqueue ref = Generator $ modify $ \state ->
-    state { generatorQueue = ref : (generatorQueue state) }
+makeType :: Name -> SchemaValue -> Generator Type
+makeType tyName (Lit (ObjectTy schema)) = do
+    enqueue (QueueObj tyName schema)
+    return $ ConT tyName
+makeType _ (Lit lit ) = return $ valueSchemaRepr lit
+makeType _ (Ref path) = do
+    enqueue (QueueRef path)
+    let SchemaComponent compName = parseSchemaComponent $ T.unpack path
+    let tyName                   = mkName compName
+    return $ ConT tyName
 
 lookupRefName :: Text -> Generator (Maybe Name)
 lookupRefName ref =
@@ -134,8 +167,8 @@ valueSchemaRepr StringTy               = ConT ''Text
 valueSchemaRepr IntegerTy              = ConT ''Int
 valueSchemaRepr NumberTy               = ConT ''Double
 valueSchemaRepr BoolTy                 = ConT ''Bool
-valueSchemaRepr (ObjectTy objSchema  ) = ConT ''A.Object
 valueSchemaRepr (ArrayTy  arraySchema) = ConT ''A.Array
+valueSchemaRepr (ObjectTy objSchema  ) = ConT ''A.Object
 
 splitOn :: Char -> String -> [String]
 splitOn _ []       = []
@@ -148,10 +181,11 @@ unSnakeCase = map (map Char.toLower) . splitOn '_'
 
 camelCase :: [String] -> String
 camelCase []       = ""
-camelCase (s : ss) = concat $ s : (map capitalize ss)
-  where
-    capitalize ""       = ""
-    capitalize (c : cs) = Char.toUpper c : cs
+camelCase (s : ss) = concat $ s : map capitalize ss
+
+capitalize :: String -> String
+capitalize ""       = ""
+capitalize (c : cs) = Char.toUpper c : cs
 
 decapitalize :: String -> String
 decapitalize []       = []
