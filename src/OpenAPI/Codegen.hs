@@ -87,20 +87,18 @@ genComponent apiSpec (SchemaComponent key) = do
 
 
 objectDecl :: Name -> ObjectSchema -> Generator Dec
-objectDecl name schema =
+objectDecl name ObjectSchema {..} =
     let objName  = nameBase name
         propName = camelCase . (decapitalize objName :) . unSnakeCase
     in  do
-            props <- mapM (mkPropField propName) $ M.toList $ objectProperties
-                schema
+            props <- mapM (mkPropField propName) $ M.elems objectProperties
             return $ DataD [] name [] Nothing [RecC name props] []
 
-mkPropField
-    :: (String -> String) -> (Text, SchemaValue) -> Generator VarBangType
-mkPropField nameF (propName, propType) = do
-    ty <- makeType name propType
+mkPropField :: (String -> String) -> Property -> Generator VarBangType
+mkPropField nameF Property {..} = do
+    ty <- tyRequired propertyIsRequired <$> makeType name propertySchema
     return $ recordField name ty
-    where name = nameF . T.unpack $ propName
+    where name = nameF . T.unpack $ propertyName
 
 
 genOperation :: ApiSpec -> OperationKey -> Name -> Generator Dec

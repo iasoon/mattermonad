@@ -9,6 +9,7 @@ import qualified Data.Aeson.Types              as A
 import qualified Data.Aeson.TH                 as A
                                                 ( deriveFromJSON )
 import qualified Data.HashMap.Strict           as M
+import qualified Data.HashSet                  as S
 import           Data.Text                      ( Text )
 import qualified Data.Text                     as T
 import           Data.Aeson                     ( (.:)
@@ -51,12 +52,32 @@ instance A.FromJSON ValueSchema where
         where parseSchema con = con <$> A.parseJSON value
 
 data ObjectSchema = ObjectSchema
-    { objectProperties :: M.HashMap Text (RefOrLit ValueSchema)
+    { objectProperties :: M.HashMap Text Property
     } deriving (Show)
+
+data Property = Property
+    { propertyName :: Text
+    , propertySchema :: SchemaValue
+    , propertyIsRequired :: Bool
+    } deriving (Show)
+
+parseProperties :: A.Object -> A.Parser [Property]
+parseProperties obj = do
+    propSchemas   <- fromMaybe M.empty <$> obj .:? "properties"
+    requiredProps <- fromMaybe S.empty <$> obj .:? "required"
+    forM (M.toList propSchemas) (uncurry (parseProperty requiredProps))
+
+parseProperty :: (S.HashSet Text) -> Text -> A.Value -> A.Parser Property
+parseProperty requiredProps name value = do
+    schema <- A.parseJSON value
+    return $ Property { propertyName       = name
+                      , propertySchema     = schema
+                      , propertyIsRequired = S.member name requiredProps
+                      }
 
 instance A.FromJSON ObjectSchema where
     parseJSON = A.withObject "ObjectSchema" $ \o -> do
-        objectProperties <- fromMaybe M.empty <$> o .:? "properties"
+        objectProperties <- indexBy propertyName <$> parseProperties o
         return ObjectSchema { .. }
 
 data ArraySchema = ArraySchema
@@ -175,7 +196,7 @@ opKey :: Text -> Text -> OperationKey
 opKey method path = OperationKey { opKeyPath = path, opKeyMethod = method }
 
 opsFromList :: [Operation] -> Operations
-opsFromList = Operations . M.fromList . map (\op -> (getOpKey op, op))
+opsFromList = Operations . indexBy getOpKey
 
 findOp :: OperationKey -> Operations -> Maybe Operation
 findOp key (Operations m) = M.lookup key m
@@ -195,5 +216,8 @@ parseOp path method = A.withObject (T.unpack method) $ \obj -> do
     let operationPath   = path
         operationMethod = method
     return Operation { .. }
+
+indexBy :: (Hashable a, Eq a) => (t -> a) -> [t] -> M.HashMap a t
+indexBy f = M.fromList . map (\t -> (f t, t))
 
 $(A.deriveFromJSON (removePrefix "components") ''Components)
