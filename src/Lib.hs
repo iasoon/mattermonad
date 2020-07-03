@@ -11,14 +11,9 @@
 {-# LANGUAGE RankNTypes #-}
 module Lib where
 
-import Lib.Schema
-import Language.Haskell.TH
-import Unsafe.Coerce
-import GHC.TypeLits
-import qualified Data.HashMap.Strict as M
-import GHC.Base (Any)
-import Data.Proxy
-import OpenAPI.Schema
-
-
--- $(genDataTypes "schema.yaml")
+import           Language.Haskell.TH
+import           Unsafe.Coerce
+import           GHC.TypeLits
+import qualified Data.HashMap.Strict           as M
+import           GHC.Base                       ( Any )
+import           Data.Proxy

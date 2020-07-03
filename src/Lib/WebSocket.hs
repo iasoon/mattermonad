@@ -1,26 +1,31 @@
 {-# LANGUAGE TemplateHaskell #-}
 module Lib.WebSocket where
 
-import Data.Aeson
-import Data.Aeson.TH (deriveJSON)
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as C8
-import qualified Data.Yaml as Yaml
-import Data.Text (Text, pack, unpack)
-import Data.Text.Encoding (encodeUtf8, decodeUtf8)
-import qualified Data.ByteString.Lazy.Char8 as L8
-import Control.Monad
-import qualified Network.WebSockets as WS
-import Control.Concurrent (forkIO)
+import           Data.Aeson
+import           Data.Aeson.TH                  ( deriveJSON )
+import qualified Data.ByteString               as BS
+import qualified Data.ByteString.Char8         as C8
+import qualified Data.Yaml                     as Yaml
+import           Data.Text                      ( Text
+                                                , pack
+                                                , unpack
+                                                )
+import           Data.Text.Encoding             ( encodeUtf8
+                                                , decodeUtf8
+                                                )
+import qualified Data.ByteString.Lazy.Char8    as L8
+import           Control.Monad
+import qualified Network.WebSockets            as WS
+import           Control.Concurrent             ( forkIO )
 
-import Wuss
+import           Wuss
 
-import qualified Reflex as R
+import qualified Reflex                        as R
 
 
-import Lib.Utils
-import Lib.Types
-import qualified Lib.HTTP as H
+import           Lib.Utils
+import           Lib.Types
+import qualified Lib.HTTP                      as H
 
 
 data WSEvent a = WSEvent
@@ -46,9 +51,9 @@ connectWS server token cb = do
     let host = C8.unpack $ H.serverHost server
     runSecureClient host 443 "/api/v4/websocket" $ \conn -> do
         let auth = object
-                [ "seq" .= ( 1 :: Int)
-                , "action" .= ( "authentication_challenge" :: Text)
-                , "data" .= object [ "token" .= ( decodeUtf8 $ token )]
+                [ "seq" .= (1 :: Int)
+                , "action" .= ("authentication_challenge" :: Text)
+                , "data" .= object ["token" .= (decodeUtf8 $ token)]
                 ]
         WS.sendTextData conn (encode auth)
         forever $ WS.receiveData conn >>= cb

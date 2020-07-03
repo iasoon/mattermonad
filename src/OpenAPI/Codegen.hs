@@ -9,7 +9,7 @@ import           Language.Haskell.TH.Syntax
 import           OpenAPI.Schema
 import qualified Data.Char                     as Char
 import qualified Data.Aeson                    as A
-import Data.Aeson ((.=))
+import           Data.Aeson ((.=))
 import           Data.Text                      ( Text )
 import qualified Data.Text                     as T
 import qualified Data.Yaml                     as Yaml
@@ -22,10 +22,14 @@ import           Control.Monad.Trans            ( lift )
 import           OpenAPI.Lib
 import qualified Data.ByteString as BS
 import qualified Network.HTTP.Types as HTTP
+import           Control.Monad (forM)
 
-
-apiSpec :: IO ApiSpec
-apiSpec = Yaml.decodeFileThrow "mattermost-openapi-v4.yaml"
+generateOperations :: FilePath -> [(Text, Text, String)] -> Q [Dec]
+generateOperations path opSpecs = do
+    spec <- runIO $ Yaml.decodeFileThrow path
+    runGen . fmap concat $
+        forM opSpecs $ \(method, path, tgtName) -> concat <$>
+            (genOperation spec (opKey method path) (mkName tgtName) >>= \decs -> (decs:) <$> finishQueue spec)
 
 data GeneratorState = GeneratorState
     { generatorTypeMap :: M.HashMap Text TyProps
@@ -179,19 +183,19 @@ operationInstance name Operation {..} =
           []
           (AppT (ConT ''ApiRequest) (ConT name))
           [ FunD
-              'requestMethod
+              'getApiRequestMethod
               [ Clause [WildP]
-                       (NormalB (LitE (StringL (T.unpack operationMethod))))
+                       (NormalB (LitE (StringL (T.unpack . T.toUpper $ operationMethod))))
                        []
               ]
           , FunD
-              'requestPath
+              'getApiRequestPath
               [ Clause [VarP (mkName "obj")]
                        (NormalB (mkPathExp propName (T.unpack operationPath) (mkName "obj")))
                        []
               ]
            , FunD
-              'requestBody
+              'getApiRequestBody
               [ Clause [VarP (mkName "obj")]
                        (if isJust operationRequestBody
                        then NormalB (AppE (ConE 'Just) (AppE (VarE 'A.encode) (AppE (VarE (mkName $ propName "payload")) (VarE (mkName "obj")))))

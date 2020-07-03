@@ -7,6 +7,6 @@ import           Data.ByteString.Builder        ( Builder )
 import qualified Data.ByteString.Lazy          as LBS
 
 class ApiRequest a where
-    requestMethod :: a -> HTTP.Method
-    requestPath :: a -> Builder
-    requestBody :: a -> Maybe LBS.ByteString
+    getApiRequestMethod :: a -> HTTP.Method
+    getApiRequestPath :: a -> Builder
+    getApiRequestBody :: a -> Maybe LBS.ByteString
