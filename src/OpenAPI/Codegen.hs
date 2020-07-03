@@ -20,6 +20,8 @@ import           Data.Aeson.TH                 as A
 import           Lib.Utils
 import           Control.Monad.Trans            ( lift )
 import           OpenAPI.Lib
+import qualified Data.ByteString as BS
+import qualified Network.HTTP.Types as HTTP
 
 
 apiSpec :: IO ApiSpec
@@ -154,10 +156,18 @@ operationDec name Operation {..} = do
         Just RequestBody {..} -> do
             ty <-
                 tyRequired requestBodyRequired
-                    <$> makeType (propName $ "payload") requestBodySchema
+                    <$> makeType (propName "payload") requestBodySchema
             let field = recordField (propName "payload") ty
             return $ field : paramProps
     return [DataD [] name [] Nothing [RecC name props] []]
+
+mkParamField :: (String -> String) -> Parameter -> Generator VarBangType
+mkParamField nameF param = do
+    ty <- tyRequired (parameterRequired param) <$> paramTy param
+    return $ recordField name ty
+  where
+    name    = nameF $ T.unpack $ parameterName param
+    paramTy = maybe (pure $ ConT ''Text) getType . parameterSchema
 
 operationInstance :: Name -> Operation -> Generator [Dec]
 operationInstance name Operation {..} =
@@ -176,26 +186,26 @@ operationInstance name Operation {..} =
               ]
           , FunD
               'requestPath
-              [ Clause [WildP]
-                       (NormalB (LitE (StringL (T.unpack operationPath))))
+              [ Clause [VarP (mkName "obj")]
+                       (NormalB (mkPathExp propName (T.unpack operationPath) (mkName "obj")))
                        []
               ]
            , FunD
               'requestBody
               [ Clause [VarP (mkName "obj")]
-                       (NormalB (AppE (VarE 'A.encode) (AppE (VarE (mkName $ propName "payload")) (VarE (mkName "obj")))))
+                       (if isJust operationRequestBody
+                       then NormalB (AppE (ConE 'Just) (AppE (VarE 'A.encode) (AppE (VarE (mkName $ propName "payload")) (VarE (mkName "obj")))))
+                       else NormalB (ConE 'Nothing))
                        []
               ]  
           ]
     ]
 
-mkParamField :: (String -> String) -> Parameter -> Generator VarBangType
-mkParamField nameF param = do
-    ty <- tyRequired (parameterRequired param) <$> paramTy param
-    return $ recordField name ty
-  where
-    name    = nameF $ T.unpack $ parameterName param
-    paramTy = maybe (pure $ ConT ''Text) getType . parameterSchema
+mkPathExp :: (String -> String) -> String -> Name -> Exp
+mkPathExp nameFn path argName = AppE (VarE 'HTTP.encodePathSegments) $ ListE (map segmentE pathSegments)
+    where pathSegments = splitOn '/' path
+          segmentE ('{':cs) = let name = mkName . nameFn . takeWhile (/= '}') $ cs in AppE (VarE name) (VarE argName)
+          segmentE cs = LitE . StringL $ cs
 
 recordField :: String -> Type -> VarBangType
 recordField name ty = (mkName name, bang, ty)
