@@ -5,15 +5,22 @@ module OpenAPI.Codegen where
 
 import           Language.Haskell.TH
 import           Language.Haskell.TH.Syntax
+                                         hiding ( lift )
 import           OpenAPI.Schema
 import qualified Data.Char                     as Char
 import qualified Data.Aeson                    as A
+import Data.Aeson ((.=))
 import           Data.Text                      ( Text )
 import qualified Data.Text                     as T
 import qualified Data.Yaml                     as Yaml
 import qualified Data.HashMap.Strict           as M
 import           Data.Maybe
 import           Control.Monad.Trans.State
+import           Data.Aeson.TH                 as A
+import           Lib.Utils
+import           Control.Monad.Trans            ( lift )
+import           OpenAPI.Lib
+
 
 apiSpec :: IO ApiSpec
 apiSpec = Yaml.decodeFileThrow "mattermost-openapi-v4.yaml"
@@ -45,28 +52,30 @@ popQueue = Generator $ do
             return $ Just item
 
 
-runGen :: Generator a -> Q (a, GeneratorState)
-runGen (Generator gen) = runStateT gen emptyState
+runGen :: Generator a -> Q a
+runGen (Generator gen) = evalStateT gen emptyState
 
 newtype Generator a = Generator (StateT GeneratorState Q a)
     deriving (Functor, Applicative, Monad, MonadFail)
 
+liftQ :: Q a -> Generator a
+liftQ = Generator . lift
 
 data SchemaComponent = SchemaComponent String
                      deriving (Show)
 
-finishQueue :: ApiSpec -> Generator [Dec]
+finishQueue :: ApiSpec -> Generator [[Dec]]
 finishQueue spec = do
     res <- popQueue
     case res of
         Nothing   -> return []
         Just item -> do
-            dec <- case item of
+            decs <- case item of
                 QueueRef path ->
                     let comp = parseSchemaComponent $ T.unpack path
                     in  genComponent spec comp
                 QueueObj name schema -> objectDecl name schema
-            fmap (dec :) $ finishQueue spec
+            (decs :) <$> finishQueue spec
 
 
 parseSchemaComponent :: String -> SchemaComponent
@@ -76,7 +85,7 @@ parseSchemaComponent str = case splitOn '/' str of
 
 
 
-genComponent :: ApiSpec -> SchemaComponent -> Generator Dec
+genComponent :: ApiSpec -> SchemaComponent -> Generator [Dec]
 genComponent apiSpec (SchemaComponent key) = do
     let
         val = M.lookup (T.pack key) $ componentsSchemas $ apiSpecComponents
@@ -86,13 +95,17 @@ genComponent apiSpec (SchemaComponent key) = do
         Just objSchema -> objectDecl (mkName key) objSchema
 
 
-objectDecl :: Name -> ObjectSchema -> Generator Dec
-objectDecl name ObjectSchema {..} =
+objectDecl :: Name -> ObjectSchema -> Generator [Dec]
+objectDecl name schema@ObjectSchema {..} =
     let objName  = nameBase name
         propName = camelCase . (decapitalize objName :) . unSnakeCase
     in  do
             props <- mapM (mkPropField propName) $ M.elems objectProperties
-            return $ DataD [] name [] Nothing [RecC name props] []
+            -- TODO: please please better structure
+            fmap concat . sequence $
+                [ return [DataD [] name [] Nothing [RecC name props] []]
+                , objectToJSON name schema
+                ]
 
 mkPropField :: (String -> String) -> Property -> Generator VarBangType
 mkPropField nameF Property {..} = do
@@ -100,26 +113,81 @@ mkPropField nameF Property {..} = do
     return $ recordField name ty
     where name = nameF . T.unpack $ propertyName
 
+objectToJSON :: Name -> ObjectSchema -> Generator [Dec]
+objectToJSON tyName ObjectSchema {..} =
+    return [ InstanceD Nothing [] (AppT (ConT ''A.ToJSON) (ConT tyName))
+        [ FunD 'A.toJSON
+            [ Clause [VarP objName] (NormalB (
+                eApp 'A.object $ eApp 'catMaybes $ ListE $ map maybePropPair $ M.elems objectProperties
+            )) []
 
-genOperation :: ApiSpec -> OperationKey -> Name -> Generator Dec
-genOperation spec opKey name = do
-    let val      = findOp opKey $ apiSpecOperations spec
-        objName  = nameBase name
+            ]]]
+    where   varName = decapitalize $ nameBase tyName
+            propName = camelCase . (varName :) . unSnakeCase
+            -- TODO: Oh please, clean me up
+
+            objName = mkName "obj"
+            obj = VarE objName
+            textLit = LitE . StringL . T.unpack
+            eJust = AppE (ConE 'Just)
+            eApp name = AppE (VarE name)
+            maybePropPair Property {..} = if propertyIsRequired
+                then eJust $ AppE makePairFn (propValue obj)
+                else AppE (eApp 'fmap makePairFn) (propValue obj)
+                where makePairFn = InfixE (Just $ textLit propertyName) (VarE '(.=)) Nothing
+                      propValue = AppE (VarE . mkName . propName . T.unpack $ propertyName)
+
+genOperation :: ApiSpec -> OperationKey -> Name -> Generator [Dec]
+genOperation spec opKey name = case findOp opKey (apiSpecOperations spec) of
+    Nothing       -> fail "operation schema not found"
+    Just opSchema -> concat <$> sequence
+        [operationDec name opSchema, operationInstance name opSchema]
+
+operationDec :: Name -> Operation -> Generator [Dec]
+operationDec name Operation {..} = do
+    -- TODO: clean up name logic
+    let objName  = nameBase name
         propName = camelCase . ((decapitalize objName) :) . unSnakeCase
-    case val of
-        Nothing       -> fail "operation schema not found"
-        Just opSchema -> do
-            paramProps <- mapM (mkParamField propName)
-                $ operationParameters opSchema
-            props <- case operationRequestBody opSchema of
-                Nothing      -> return paramProps
-                Just reqBody -> do
-                    ty <- tyRequired (requestBodyRequired reqBody) <$> makeType
-                        (propName $ "payload")
-                        (requestBodySchema reqBody)
-                    let field = recordField (propName "payload") ty
-                    return $ field : paramProps
-            return $ DataD [] name [] Nothing [RecC name props] []
+    paramProps <- mapM (mkParamField propName) operationParameters
+    props      <- case operationRequestBody of
+        Nothing               -> return paramProps
+        Just RequestBody {..} -> do
+            ty <-
+                tyRequired requestBodyRequired
+                    <$> makeType (propName $ "payload") requestBodySchema
+            let field = recordField (propName "payload") ty
+            return $ field : paramProps
+    return [DataD [] name [] Nothing [RecC name props] []]
+
+operationInstance :: Name -> Operation -> Generator [Dec]
+operationInstance name Operation {..} =
+    let objName  = nameBase name
+        propName = camelCase . ((decapitalize objName) :) . unSnakeCase
+    in
+    return [ InstanceD
+          Nothing
+          []
+          (AppT (ConT ''ApiRequest) (ConT name))
+          [ FunD
+              'requestMethod
+              [ Clause [WildP]
+                       (NormalB (LitE (StringL (T.unpack operationMethod))))
+                       []
+              ]
+          , FunD
+              'requestPath
+              [ Clause [WildP]
+                       (NormalB (LitE (StringL (T.unpack operationPath))))
+                       []
+              ]
+           , FunD
+              'requestBody
+              [ Clause [VarP (mkName "obj")]
+                       (NormalB (AppE (VarE 'A.encode) (AppE (VarE (mkName $ propName "payload")) (VarE (mkName "obj")))))
+                       []
+              ]  
+          ]
+    ]
 
 mkParamField :: (String -> String) -> Parameter -> Generator VarBangType
 mkParamField nameF param = do
