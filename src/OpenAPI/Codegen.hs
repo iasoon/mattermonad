@@ -1,3 +1,4 @@
+{- TODO this module needs some major clean-up :^) -}
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 
@@ -89,8 +90,6 @@ parseSchemaComponent str = case splitOn '/' str of
     ["#", "components", "schemas", name] -> SchemaComponent name
     _ -> error "unknown component"
 
-
-
 genComponent :: ApiSpec -> SchemaComponent -> Generator [Dec]
 genComponent apiSpec (SchemaComponent key) = do
     let
@@ -119,6 +118,7 @@ mkPropField nameF Property {..} = do
     return $ recordField name ty
     where name = nameF . T.unpack $ propertyName
 
+-- TODO: toEncoding implementation
 objectToJSON :: Name -> ObjectSchema -> Generator [Dec]
 objectToJSON tyName ObjectSchema {..} =
     return [ InstanceD Nothing [] (AppT (ConT ''A.ToJSON) (ConT tyName))
@@ -147,7 +147,10 @@ genOperation :: ApiSpec -> OperationKey -> Name -> Generator [Dec]
 genOperation spec opKey name = case findOp opKey (apiSpecOperations spec) of
     Nothing       -> fail "operation schema not found"
     Just opSchema -> concat <$> sequence
-        [operationDec name opSchema, operationInstance name opSchema]
+        [ operationDec name opSchema
+        , operationInstance name opSchema
+        , operationResponse name opSchema
+        ]
 
 operationDec :: Name -> Operation -> Generator [Dec]
 operationDec name Operation {..} = do
@@ -211,6 +214,36 @@ mkPathExp nameFn path argName = AppE (VarE 'HTTP.encodePathSegments) $ ListE (ma
           segmentE ('{':cs) = let name = mkName . nameFn . takeWhile (/= '}') $ cs in AppE (VarE name) (VarE argName)
           segmentE cs = LitE . StringL $ cs
 
+operationResponse :: Name -> Operation -> Generator [Dec]
+operationResponse opName Operation {..} =
+    fmap concat . forM (M.toList operationResponses) $ \case
+        (statusCode, Lit response) -> makeResponse opName statusCode response
+        _ -> return [] -- TODO
+
+httpStatusName :: Text -> String
+httpStatusName "200" = "Ok"
+httpStatusName "201" = "Created"
+httpStatusName _ = error "unimplemented status code"
+        
+makeResponse :: Name -> Text -> Response -> Generator [Dec]
+makeResponse opName statusCode Response {..} =
+    case responseContentSchema of
+        Nothing -> error "no schema given"
+        Just schema -> do
+            let respName = camelCase [nameBase opName, httpStatusName statusCode]
+            respTy <- makeType respName schema
+            requestResponseInstance (ConT opName) (T.unpack statusCode) respTy
+
+requestResponseInstance :: Type -> String -> Type -> Generator [Dec]
+requestResponseInstance opType statusCode respType = return
+    [ TySynInstD $ TySynEqn Nothing 
+        (AppT (AppT (ConT ''RequestResponse) opType)
+              (LitT $ StrTyLit statusCode))
+        respType
+    ]
+
+
+
 recordField :: String -> Type -> VarBangType
 recordField name ty = (mkName name, bang, ty)
     where bang = Bang NoSourceUnpackedness NoSourceStrictness
@@ -218,7 +251,6 @@ recordField name ty = (mkName name, bang, ty)
 tyRequired :: Bool -> Type -> Type
 tyRequired True  = id
 tyRequired False = AppT (ConT ''Maybe)
-
 
 getType :: SchemaValue -> Generator Type
 getType (Lit lit ) = return $ simpleType lit
