@@ -221,3 +221,4 @@ indexBy :: (Hashable a, Eq a) => (t -> a) -> [t] -> M.HashMap a t
 indexBy f = M.fromList . map (\t -> (f t, t))
 
 $(A.deriveFromJSON (removePrefix "components") ''Components)
+

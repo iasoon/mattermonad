@@ -110,6 +110,7 @@ objectDecl name schema@ObjectSchema {..} =
             fmap concat . sequence $
                 [ return [DataD [] name [] Nothing [RecC name props] []]
                 , objectToJSON name schema
+                , objectFromJSON name schema
                 ]
 
 mkPropField :: (String -> String) -> Property -> Generator VarBangType
@@ -120,14 +121,15 @@ mkPropField nameF Property {..} = do
 
 -- TODO: toEncoding implementation
 objectToJSON :: Name -> ObjectSchema -> Generator [Dec]
-objectToJSON tyName ObjectSchema {..} =
-    return [ InstanceD Nothing [] (AppT (ConT ''A.ToJSON) (ConT tyName))
+objectToJSON tyName ObjectSchema {..} = return
+    [ InstanceD Nothing [] (AppT (ConT ''A.ToJSON) (ConT tyName))
         [ FunD 'A.toJSON
             [ Clause [VarP objName] (NormalB (
                 eApp 'A.object $ eApp 'catMaybes $ ListE $ map maybePropPair $ M.elems objectProperties
             )) []
-
-            ]]]
+            ]
+        ]
+    ]
     where   varName = decapitalize $ nameBase tyName
             propName = camelCase . (varName :) . unSnakeCase
             -- TODO: Oh please, clean me up
@@ -136,12 +138,32 @@ objectToJSON tyName ObjectSchema {..} =
             obj = VarE objName
             textLit = LitE . StringL . T.unpack
             eJust = AppE (ConE 'Just)
-            eApp name = AppE (VarE name)
             maybePropPair Property {..} = if propertyIsRequired
                 then eJust $ AppE makePairFn (propValue obj)
                 else AppE (eApp 'fmap makePairFn) (propValue obj)
                 where makePairFn = InfixE (Just $ textLit propertyName) (VarE '(.=)) Nothing
                       propValue = AppE (VarE . mkName . propName . T.unpack $ propertyName)
+
+objectFromJSON :: Name -> ObjectSchema -> Generator [Dec]    
+objectFromJSON tyName ObjectSchema {..} =
+    return
+        [ InstanceD Nothing [] (AppT (ConT ''A.FromJSON) (ConT tyName))
+            [ FunD 'A.parseJSON [ Clause [] (NormalB
+                (AppE (AppE (VarE 'A.withObject) (LitE (StringL (nameBase tyName))))
+                     (LamE [VarP objName] args)
+                ))
+                []
+            ]]
+        ]
+    where   objName = mkName "o"
+            cons = AppE (VarE 'pure) (ConE tyName)
+            args = foldl reduceFn cons $ M.elems objectProperties
+            propParser Property {..} = AppE (AppE (VarE op) (VarE objName)) (LitE . StringL . T.unpack $ propertyName)
+                where op = if propertyIsRequired then '(A..:) else '(A..:?)
+            reduceFn l r = UInfixE l (VarE '(<*>)) (propParser r)
+
+eApp :: Name -> Exp -> Exp
+eApp name = AppE (VarE name)
 
 genOperation :: ApiSpec -> OperationKey -> Name -> Generator [Dec]
 genOperation spec opKey name = case findOp opKey (apiSpecOperations spec) of
@@ -241,8 +263,6 @@ requestResponseInstance opType statusCode respType = return
               (LitT $ StrTyLit statusCode))
         respType
     ]
-
-
 
 recordField :: String -> Type -> VarBangType
 recordField name ty = (mkName name, bang, ty)
