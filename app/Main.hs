@@ -6,8 +6,12 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE RecursiveDo #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
 
@@ -28,21 +32,28 @@ import           Data.Text                      ( Text
 import           Data.Text.Encoding             ( decodeUtf8 )
 import qualified Data.Text.IO                  as T
 import qualified Data.Yaml                     as Yaml
-import           Data.Maybe                     ( fromJust )
+import           Data.Maybe                     ( fromJust
+                                                , fromMaybe
+                                                )
 import           Data.Either                    ( fromRight )
 import           Debug.Trace
 import           Lib.HTTP
 import           Lib.Session
-import           Lib.Types
+-- import           Lib.Types
 import           Lib.Utils
 import           Lib.WebSocket
-import           Network.HTTP.Client
+import           Network.HTTP.Client     hiding ( Proxy )
 import           Network.HTTP.Client.TLS
 import           Network.HTTP.Types.Header      ( ResponseHeaders )
 import           Network.HTTP.Types.Status      ( statusCode )
 import qualified Reflex                        as R
 import qualified Reflex.Host.Headless          as R
 import           OpenAPI.Test
+import           OpenAPI.Lib
+import           GHC.TypeLits
+import           Data.Proxy
+import           Data.Type.Equality             ( (:~:)(..) )
+
 
 main :: IO ()
 main = R.runHeadlessApp botMonad
@@ -81,8 +92,11 @@ botMonad = mdo
                          , getChannelChannelName    = "bot-monad-testkanaal"
                          , getChannelIncludeDeleted = Nothing
                          }
-    channelId <- chanDataId . justDecode <$> runApiRequest req
-    liftIO . putStrLn $ show channelId
+
+    channelId <-
+      either error (fromJust . channelId)
+      .   parseResponse statusOk
+      <$> runApiRequest req
     let announce = CreatePost
           { createPostPayload   = CreatePostPayload
                                     { createPostPayloadChannelId = channelId
@@ -95,6 +109,7 @@ botMonad = mdo
           , createPostSetOnline = Nothing
           }
     resp <- runApiRequest announce
+
     return ()
 
   -- flip runReaderT session $ do
@@ -108,5 +123,5 @@ botMonad = mdo
   --     return ()
   pure R.never
 
-justDecode :: forall a . (FromJSON a) => Response L8.ByteString -> a
-justDecode = either error id . eitherDecode . responseBody
+statusOk = Proxy @"200"
+statusCreated = Proxy @"201"

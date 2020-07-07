@@ -1,3 +1,8 @@
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
+
+
 module Lib.Session where
 
 import           Data.ByteString               as BS
@@ -10,8 +15,17 @@ import           Network.HTTP.Client            ( Request(..)
                                                 , Response
                                                 , getHttpManager
                                                 , RequestBody(..)
+                                                , responseBody
+                                                , responseStatus
                                                 )
+import           Network.HTTP.Types             ( statusCode )
 import           Control.Monad.Reader
+import           GHC.TypeLits
+import           Data.Aeson                     ( FromJSON
+                                                , eitherDecode
+                                                )
+import           Data.Proxy                     ( Proxy(..) )
+
 
 
 import           Lib.HTTP
@@ -32,10 +46,10 @@ sessionDefaultReq SessionData {..} =
     addBearerToken sessionToken $ mkServerRequest $ clientServerData
         sessionClient
 
+newtype ApiResponse req = ApiResponse (Response LBS.ByteString)
+
 runApiRequest
-    :: (Monad m, MonadIO m, ApiRequest a)
-    => a
-    -> SessionT m (Response LBS.ByteString)
+    :: (Monad m, MonadIO m, ApiRequest a) => a -> SessionT m (ApiResponse a)
 runApiRequest a = do
     req <- asks sessionDefaultReq <&> \req -> req
         { method      = getApiRequestMethod a
@@ -45,5 +59,18 @@ runApiRequest a = do
                         <> getApiRequestPath a
         , requestBody = RequestBodyLBS $ fromMaybe "" (getApiRequestBody a)
         }
-    runReq req
+    ApiResponse <$> runReq req
 
+-- TODO: better errors
+parseResponse
+    :: forall status req resp
+     . (KnownSymbol status, FromJSON resp, RequestResponse req status ~ resp)
+    => Proxy status
+    -> ApiResponse req
+    -> Either String resp
+parseResponse Proxy (ApiResponse resp) = if respStatus == expectedStatus
+    then eitherDecode (responseBody resp)
+    else Left "wrong status code"
+  where
+    respStatus     = show . statusCode . responseStatus $ resp
+    expectedStatus = symbolVal (Proxy @status)
