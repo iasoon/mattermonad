@@ -61,16 +61,19 @@ runApiRequest a = do
         }
     ApiResponse <$> runReq req
 
--- TODO: better errors
 parseResponse
     :: forall status req resp
      . (KnownSymbol status, FromJSON resp, RequestResponse req status ~ resp)
     => Proxy status
     -> ApiResponse req
-    -> Either String resp
-parseResponse Proxy (ApiResponse resp) = if respStatus == expectedStatus
-    then eitherDecode (responseBody resp)
-    else Left "wrong status code"
+    -> Either ParseError resp
+parseResponse Proxy (ApiResponse resp) = if show respStatus == expectedStatus
+    then case eitherDecode (responseBody resp) of
+        Right res       -> Right res
+        Left  decodeErr -> Left $ DecodeError decodeErr
+    else Left $ InvalidStatus respStatus
   where
-    respStatus     = show . statusCode . responseStatus $ resp
+    respStatus     = statusCode . responseStatus $ resp
     expectedStatus = symbolVal (Proxy @status)
+
+data ParseError = InvalidStatus Int | DecodeError String deriving (Show)
