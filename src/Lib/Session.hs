@@ -1,6 +1,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 
 module Lib.Session where
@@ -19,6 +20,7 @@ import           Network.HTTP.Client            ( Request(..)
                                                 , responseStatus
                                                 )
 import           Network.HTTP.Types             ( statusCode )
+import qualified Network.HTTP.Client           as HTTP
 import           Control.Monad.Reader
 import           GHC.TypeLits
 import           Data.Aeson                     ( FromJSON
@@ -48,19 +50,24 @@ sessionDefaultReq SessionData {..} =
 
 newtype ApiResponse req = ApiResponse (Response LBS.ByteString)
 
+-- TODO: we need to break this apart more.
+assembleHttpRequest
+    :: forall m req
+     . (MonadReader SessionData m, ApiRequest req)
+    => req
+    -> m HTTP.Request
+assembleHttpRequest r = asks sessionDefaultReq <&> \req -> req
+    { method = getApiRequestMethod r
+    , path = LBS.toStrict . toLazyByteString $ "/api/v4" <> getApiRequestPath r
+    , requestBody = RequestBodyLBS $ fromMaybe "" (getApiRequestBody r)
+    }
+
 runApiRequest
     :: (Monad m, MonadIO m, ApiRequest a) => a -> SessionT m (ApiResponse a)
-runApiRequest a = do
-    req <- asks sessionDefaultReq <&> \req -> req
-        { method      = getApiRequestMethod a
-        , path        = LBS.toStrict
-                        .  toLazyByteString
-                        $  "/api/v4"
-                        <> getApiRequestPath a
-        , requestBody = RequestBodyLBS $ fromMaybe "" (getApiRequestBody a)
-        }
-    ApiResponse <$> runReq req
+runApiRequest = return . ApiResponse <=< runReq <=< assembleHttpRequest
 
+-- TODO : better matching: default, 2XX, ..
+-- Maybe stop using type-level strings and introduce a type.
 parseResponse
     :: forall status req resp
      . (KnownSymbol status, FromJSON resp, RequestResponse req status ~ resp)

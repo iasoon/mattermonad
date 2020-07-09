@@ -94,7 +94,7 @@ botMonad = mdo
                          }
 
     channelId <-
-      either error (fromJust . channelId)
+      either (error . show) (fromJust . channelId)
       .   parseResponse statusOk
       <$> runApiRequest req
     let announce = CreatePost
