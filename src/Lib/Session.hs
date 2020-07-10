@@ -84,3 +84,14 @@ parseResponse Proxy (ApiResponse resp) = if show respStatus == expectedStatus
     expectedStatus = symbolVal (Proxy @status)
 
 data ParseError = InvalidStatus Int | DecodeError String deriving (Show)
+
+
+-- TODO: better name for this?
+-- expectRequest
+--     :: forall req status resp
+--      . (KnownSymbol status, FromJSON resp, RequestResponse req status ~ resp)
+--     => Proxy status
+--     -> req
+--     -> Either ParseError resp
+-- expectRequest status req = do
+--     runApiRequest req

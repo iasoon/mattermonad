@@ -72,17 +72,17 @@ botMonad = mdo
                           ApiClientConfig { .. }
   let token = fromJust $ getHeader loginResp "Token"
 
-  -- (eWS, callback) <- R.newTriggerEvent
-  -- liftIO $ forkIO $ connectWS clientServerData token callback
+  (eWS, callback) <- R.newTriggerEvent
+  liftIO $ forkIO $ connectWS clientServerData token callback
 
-  -- let wsEvents :: R.Event t (WSEvent Value) = R.mapMaybe decode eWS
-  --     (others, posted) = R.fanEither $ wsEvents <&> \WSEvent {..} ->
-  --       case wsEventEvent of
-  --         "posted" -> case fromJSON wsEventData of
-  --           Success e -> Right (e :: EventPosted)
-  --           Error   e -> trace e $ Left $ WSEvent { .. }
-  --         _ -> Left $ WSEvent { .. }
-  --     dms = R.ffilter ((== "D") . eventPostedChannelType) posted
+  let wsEvents :: R.Event t (WSEvent Value) = R.mapMaybe decode eWS
+      (others, posted) = R.fanEither $ wsEvents <&> \WSEvent {..} ->
+        case wsEventEvent of
+          "posted" -> case fromJSON wsEventData of
+            Success e -> Right (e :: EventPosted)
+            Error   e -> trace e $ Left $ WSEvent { .. }
+          _ -> Left $ WSEvent { .. }
+      dms = R.ffilter ((== "D") . eventPostedChannelType) posted
 
   let session = SessionData { sessionClient = ApiClientConfig { .. }
                             , sessionToken  = token
@@ -92,14 +92,15 @@ botMonad = mdo
                          , getChannelChannelName    = "bot-monad-testkanaal"
                          , getChannelIncludeDeleted = Nothing
                          }
-
-    channelId <-
-      either (error . show) (fromJust . channelId)
-      .   parseResponse statusOk
-      <$> runApiRequest req
+    resp <- runApiRequest req
+    liftIO $ let (ApiResponse r) = resp in (L8.putStrLn $ responseBody r)
+    let chanId =
+          either (error . show) (fromJust . channelId)
+            . parseResponse statusOk
+            $ resp
     let announce = CreatePost
           { createPostPayload   = CreatePostPayload
-                                    { createPostPayloadChannelId = channelId
+                                    { createPostPayloadChannelId = chanId
                                     , createPostPayloadMessage   =
                                       "IK BEN DE BOT-MONAD"
                                     , createPostPayloadProps     = Nothing
@@ -112,15 +113,31 @@ botMonad = mdo
 
     return ()
 
-  -- flip runReaderT session $ do
-  --   me <- userId <$> runReq GetUser { getUserId = "me" }
-  --   let incomingDms = R.ffilter ((/= me) . postUserId . eventPostedPost) dms
-  --   R.performEvent_ $ incomingDms <&> \e -> do
-  --     let chanId = postChannelId . eventPostedPost $ e
-  --     runReq $ CreatePostReq { createPostChannelId = chanId
-  --                            , createPostMessage   = "IK BEN DE BOT-MONAD"
-  --                            }
-  --     return ()
+  flip runReaderT session $ do
+    resp <- runApiRequest (GetUser { getUserUserId = "me" })
+    liftIO $ let (ApiResponse r) = resp in (L8.putStrLn $ responseBody r)
+
+    let
+      me =
+        either (error . show) (fromJust . userId)
+          . parseResponse statusOk
+          $ resp
+    let incomingDms =
+          R.ffilter ((/= me) . fromJust . postUserId . eventPostedPost) dms
+    R.performEvent_ $ incomingDms <&> \e -> do
+      let chanId = fromJust . postChannelId . eventPostedPost $ e
+      runApiRequest $ CreatePost
+        { createPostPayload   = CreatePostPayload
+                                  { createPostPayloadChannelId = chanId
+                                  , createPostPayloadMessage   =
+                                    "IK BEN DE BOT-MONAD"
+                                  , createPostPayloadProps     = Nothing
+                                  , createPostPayloadFileIds   = Nothing
+                                  , createPostPayloadRootId    = Nothing
+                                  }
+        , createPostSetOnline = Nothing
+        }
+      return ()
   pure R.never
 
 statusOk = Proxy @"200"

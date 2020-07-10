@@ -59,12 +59,6 @@ data ApiClient = ApiClientConfig
     , clientServerData :: Server
     }
 
--- class Monad m => ApiRequest m a where
---     type ReqResult a
-
---     encodeRequest :: a -> m Request
---     parseResult :: Response LBS.ByteString -> ReqResult a
-
 instance HasHttpManager ApiClient where
     getHttpManager = clientHttpManager
 
@@ -80,9 +74,6 @@ makeLoginReq loginReq = asks (mkServerRequest . clientServerData) <&> \req ->
         , path        = "/api/v4/users/login"
         , requestBody = RequestBodyLBS $ encode loginReq
         }
-
-    -- parseResult resp = sessionToken
-    --     where   sessionToken = fromJust $ getHeader resp "Token"
 
 runReq
     :: forall m r

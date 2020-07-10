@@ -24,8 +24,8 @@ import qualified Reflex                        as R
 
 
 import           Lib.Utils
-import           Lib.Types
 import qualified Lib.HTTP                      as H
+import           OpenAPI.Test
 
 
 data WSEvent a = WSEvent
@@ -35,7 +35,7 @@ data WSEvent a = WSEvent
 $(deriveJSON (removePrefix "wsEvent") ''WSEvent)
 
 data EventPosted = EventPosted
-    { eventPostedPost :: PostData
+    { eventPostedPost :: Post
     , eventPostedChannelType :: Text
     }
 
