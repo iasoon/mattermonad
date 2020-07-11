@@ -10,6 +10,7 @@ import           Language.Haskell.TH.Syntax
 import           OpenAPI.Schema
 import qualified Data.Char                     as Char
 import qualified Data.Aeson                    as A
+import qualified Data.Aeson.Types as A
 import           Data.Aeson ((.=))
 import           Data.Text                      ( Text )
 import qualified Data.Text                     as T
@@ -17,20 +18,22 @@ import qualified Data.Yaml                     as Yaml
 import qualified Data.HashMap.Strict           as M
 import           Data.Maybe
 import           Control.Monad.Trans.State
-import           Data.Aeson.TH                 as A
+import qualified Data.Aeson.TH                 as A
 import           Lib.Utils
 import           Control.Monad.Trans            ( lift )
+import           Control.Monad.Trans.Reader     ( ReaderT(..) )
 import           OpenAPI.Lib
 import qualified Data.ByteString as BS
 import qualified Network.HTTP.Types as HTTP
 import           Control.Monad (forM)
 
-generateOperations :: FilePath -> [(Text, Text, String)] -> Q [Dec]
-generateOperations path opSpecs = do
-    spec <- runIO $ Yaml.decodeFileThrow path
+generateOperations :: FilePath -> [(Text, Text, String)] -> ObjConfig -> Q [Dec]
+generateOperations path opSpecs generatorObjConfig = do
+    generatorSpec <- runIO $ Yaml.decodeFileThrow path
+    let conf = GeneratorConfig {..}
     runGen . fmap concat $
         forM opSpecs $ \(method, path, tgtName) -> concat <$>
-            (genOperation spec (opKey method path) (mkName tgtName) >>= \decs -> (decs:) <$> finishQueue spec)
+            (genOperation generatorSpec (opKey method path) (mkName tgtName) >>= \decs -> (decs:) <$> finishQueue conf)
 
 data GeneratorState = GeneratorState
     { generatorTypeMap :: M.HashMap Text TyProps
@@ -71,8 +74,13 @@ liftQ = Generator . lift
 data SchemaComponent = SchemaComponent String
                      deriving (Show)
 
-finishQueue :: ApiSpec -> Generator [[Dec]]
-finishQueue spec = do
+data GeneratorConfig = GeneratorConfig
+    { generatorSpec :: ApiSpec
+    , generatorObjConfig :: ObjConfig
+    }
+
+finishQueue :: GeneratorConfig -> Generator [[Dec]]
+finishQueue config@GeneratorConfig {..} = do
     res <- popQueue
     case res of
         Nothing   -> return []
@@ -80,9 +88,9 @@ finishQueue spec = do
             decs <- case item of
                 QueueRef path ->
                     let comp = parseSchemaComponent $ T.unpack path
-                    in  genComponent spec comp
-                QueueObj name schema -> objectDecl name schema
-            (decs :) <$> finishQueue spec
+                    in  genComponent config comp
+                QueueObj name schema -> objectDecl name generatorObjConfig schema
+            (decs :) <$> finishQueue config
 
 
 parseSchemaComponent :: String -> SchemaComponent
@@ -90,27 +98,39 @@ parseSchemaComponent str = case splitOn '/' str of
     ["#", "components", "schemas", name] -> SchemaComponent name
     _ -> error "unknown component"
 
-genComponent :: ApiSpec -> SchemaComponent -> Generator [Dec]
-genComponent apiSpec (SchemaComponent key) = do
+genComponent :: GeneratorConfig -> SchemaComponent -> Generator [Dec]
+genComponent GeneratorConfig {..} (SchemaComponent key) = do
     let
         val = M.lookup (T.pack key) $ componentsSchemas $ apiSpecComponents
-            apiSpec
+            generatorSpec
     case val of
         Nothing        -> fail "component schema not found"
-        Just objSchema -> objectDecl (mkName key) objSchema
+        Just objSchema -> objectDecl (mkName key) generatorObjConfig objSchema
 
+data ObjConfig = ObjConfig
+    { objConfigPropFromJSON :: Property -> Exp -> Exp
+    }
 
-objectDecl :: Name -> ObjectSchema -> Generator [Dec]
-objectDecl name schema@ObjectSchema {..} =
+defaultObjConfig = ObjConfig {
+    objConfigPropFromJSON =  propFromJSON
+}
+
+propFromJSON Property {..} obj = AppE (AppE (VarE op) obj) (LitE . StringL . T.unpack $ propertyName)
+    where op = if propertyIsRequired then '(A..:) else '(A..:?)
+
+type ObjGen a = (ReaderT ObjConfig Generator) a
+
+objectDecl :: Name -> ObjConfig -> ObjectSchema -> Generator [Dec]
+objectDecl name config schema@ObjectSchema {..} =
     let objName  = nameBase name
         propName = camelCase . (decapitalize objName :) . unSnakeCase
     in  do
             props <- mapM (mkPropField propName) $ M.elems objectProperties
             -- TODO: please please better structure
-            fmap concat . sequence $
-                [ return [DataD [] name [] Nothing [RecC name props] []]
-                , objectToJSON name schema
-                , objectFromJSON name schema
+            return $ concat
+                [ [DataD [] name [] Nothing [RecC name props] []]
+                , objectToJSON name config schema
+                , objectFromJSON name config schema
                 ]
 
 mkPropField :: (String -> String) -> Property -> Generator VarBangType
@@ -120,8 +140,8 @@ mkPropField nameF Property {..} = do
     where name = nameF . T.unpack $ propertyName
 
 -- TODO: toEncoding implementation
-objectToJSON :: Name -> ObjectSchema -> Generator [Dec]
-objectToJSON tyName ObjectSchema {..} = return
+objectToJSON :: Name -> ObjConfig -> ObjectSchema -> [Dec]
+objectToJSON tyName config ObjectSchema {..} =
     [ InstanceD Nothing [] (AppT (ConT ''A.ToJSON) (ConT tyName))
         [ FunD 'A.toJSON
             [ Clause [VarP objName] (NormalB (
@@ -144,22 +164,20 @@ objectToJSON tyName ObjectSchema {..} = return
                 where makePairFn = InfixE (Just $ textLit propertyName) (VarE '(.=)) Nothing
                       propValue = AppE (VarE . mkName . propName . T.unpack $ propertyName)
 
-objectFromJSON :: Name -> ObjectSchema -> Generator [Dec]    
-objectFromJSON tyName ObjectSchema {..} =
-    return
-        [ InstanceD Nothing [] (AppT (ConT ''A.FromJSON) (ConT tyName))
-            [ FunD 'A.parseJSON [ Clause [] (NormalB
-                (AppE (AppE (VarE 'A.withObject) (LitE (StringL (nameBase tyName))))
-                     (LamE [VarP objName] args)
-                ))
-                []
-            ]]
-        ]
+objectFromJSON :: Name -> ObjConfig -> ObjectSchema -> [Dec]    
+objectFromJSON tyName ObjConfig {..} ObjectSchema {..} =
+    [ InstanceD Nothing [] (AppT (ConT ''A.FromJSON) (ConT tyName))
+        [ FunD 'A.parseJSON [ Clause [] (NormalB
+            (AppE (AppE (VarE 'A.withObject) (LitE (StringL (nameBase tyName))))
+                    (LamE [VarP objName] args)
+            ))
+            []
+        ]]
+    ]
     where   objName = mkName "o"
             cons = AppE (VarE 'pure) (ConE tyName)
             args = foldl reduceFn cons $ M.elems objectProperties
-            propParser Property {..} = AppE (AppE (VarE op) (VarE objName)) (LitE . StringL . T.unpack $ propertyName)
-                where op = if propertyIsRequired then '(A..:) else '(A..:?)
+            propParser prop = objConfigPropFromJSON prop (VarE objName)
             reduceFn l r = UInfixE l (VarE '(<*>)) (propParser r)
 
 eApp :: Name -> Exp -> Exp

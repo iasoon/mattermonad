@@ -53,7 +53,7 @@ connectWS server token cb = do
         let auth = object
                 [ "seq" .= (1 :: Int)
                 , "action" .= ("authentication_challenge" :: Text)
-                , "data" .= object ["token" .= (decodeUtf8 $ token)]
+                , "data" .= object ["token" .= decodeUtf8 token]
                 ]
         WS.sendTextData conn (encode auth)
         forever $ WS.receiveData conn >>= cb
