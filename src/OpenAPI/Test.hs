@@ -12,8 +12,6 @@ $(generateOperations "mattermost-openapi-v4.yaml"
     [ ("get", "/teams/name/{team_name}/channels/name/{channel_name}", "GetChannel")
     , ("get", "/users/{user_id}", "GetUser")
     , ("post", "/posts", "CreatePost")
+    , ("get", "/posts/{post_id}", "GetPost")
     ]
-    ObjConfig
-        { objConfigPropFromJSON = mmPropFromJSON
-        }
-    )
+    mmConfig )
