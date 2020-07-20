@@ -1,4 +1,6 @@
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeFamilies #-}
 module OpenAPI.MMConfig where
 
 import qualified Data.Aeson                    as A
@@ -11,47 +13,25 @@ import           OpenAPI.Codegen
 import           OpenAPI.Schema
 import           OpenAPI.Lib
 
-mmConfig =
-  ObjConfig { objConfigPropType = mmPropType, objConfigPropExp = mmPropExp }
+data MMBool = MMBool
 
-mmPropType :: String -> Property -> Generator Type
-mmPropType name Property {..} = undefined
+instance Sing MMBool where
+    sing = MMBool
 
-mmPropExp :: Property -> Exp
-mmPropExp Property {..} = AppE (ConE conName)
-                               (LitE . StringL . T.unpack $ propertyName)
-  where conName = if propertyIsRequired then 'RequiredProp else 'OptionalProp
+instance PropertyEncoding MMBool Bool Bool where
+    type PropRepr MMBool Bool = Bool
+
+    encodeValue MMBool = Just . A.toJSON
+    decodeValue MMBool = maybe (pure False) parseBool
 
 
-mmPropFromJSON :: Property -> Exp -> Exp
-mmPropFromJSON prop@Property {..} = parser
- where
-  parser = case propertySchema of
-    (Lit BoolTy) -> parsePropWith prop (VarE 'parseBool)
-    _            -> parseProp prop
+mmConfig = ObjConfig { objPropEncoding = mmPropEncoding }
 
-parseProp :: Property -> Exp -> Exp
-parseProp Property {..} objE = UInfixE objE accessorE fieldNameE
- where
-  accessorE  = VarE '(A..:)
-  -- accessorE  = VarE $ if propertyIsRequired then '(A..:) else '(A..:?)
-  fieldNameE = LitE . StringL . T.unpack $ propertyName
+mmPropEncoding :: Property -> Name
+mmPropEncoding Property {..} = case propertySchema of
+    Lit BoolTy -> ''MMBool
+    _          -> if propertyIsRequired then ''RequiredProp else ''OptionalProp
 
-parsePropWith :: Property -> Exp -> Exp -> Exp
-parsePropWith prop@Property {..} valueParser =
-  InfixE (Just valueParser) (VarE '(=<<)) . Just . parseProp prop
---  where
---   parseVal = appIf (not propertyIsRequired) (appName 'maybeParse) valueParser
-
-appName = AppE . VarE
-
-maybeParse :: (a -> A.Parser b) -> Maybe a -> A.Parser (Maybe b)
-maybeparse parse (Just val) = Just <$> parse val
-maybeParse _ Nothing = pure Nothing
-
-appIf :: Bool -> (a -> a) -> a -> a
-appIf True  f = f
-appIf False _ = id
 
 parseBool :: A.Value -> A.Parser Bool
 parseBool (A.Bool   val    ) = return val

@@ -35,41 +35,42 @@ type family RequestResponse req (status :: Symbol) :: (resp :: *)
 class Sing a where
     sing :: a
 
+class PropRepr e ty ~ repr => PropertyEncoding e ty repr |  e ty -> repr , e repr -> ty where
+    type PropRepr m ty :: *
+
+    decodeValue :: e -> Maybe A.Value -> A.Parser repr
+    encodeValue :: e -> repr -> Maybe A.Value
+
+retrievePropValue
+    :: PropertyEncoding e ty repr => e -> Text -> A.Object -> A.Parser repr
+retrievePropValue decoder propName = decodeValue decoder . M.lookup propName
+
+encodePropValue
+    :: PropertyEncoding e ty repr => e -> Text -> repr -> Maybe A.Pair
+encodePropValue encoder propName = fmap (propName A..=) . encodeValue encoder
+
+
 data RequiredProp = RequiredProp
 
 instance Sing RequiredProp where
     sing = RequiredProp
+
+instance (A.FromJSON a, A.ToJSON a) => PropertyEncoding RequiredProp a a where
+    type PropRepr RequiredProp a = a
+
+    decodeValue RequiredProp = A.parseJSON <=< pFromMaybe
+    encodeValue RequiredProp = Just . A.toJSON
 
 data OptionalProp = OptionalProp
 
 instance Sing OptionalProp where
     sing = OptionalProp
 
-class (Sing m, PropRepr m param ~ repr ) => PropertyType m param repr |  m param -> repr , m repr -> param where
-    type PropRepr m param :: *
-
-    decodeValue :: m -> Maybe A.Value -> A.Parser repr
-    encodeValue :: m -> repr -> Maybe A.Value
-
-instance (A.FromJSON a, A.ToJSON a) => PropertyType RequiredProp a a where
-    type PropRepr RequiredProp a = a
-
-    decodeValue RequiredProp = A.parseJSON <=< pFromMaybe
-    encodeValue RequiredProp = Just . A.toJSON
-
-instance (A.FromJSON a, A.ToJSON a) => PropertyType OptionalProp a (Maybe a) where
+instance (A.FromJSON a, A.ToJSON a) => PropertyEncoding OptionalProp a (Maybe a) where
     type PropRepr OptionalProp a = Maybe a
 
     decodeValue OptionalProp = maybe (pure Nothing) A.parseJSON
     encodeValue OptionalProp = fmap A.toJSON
-
-retrievePropValue
-    :: PropertyType m param repr => m -> Text -> A.Object -> A.Parser repr
-retrievePropValue decoder propName = decodeValue decoder . M.lookup propName
-
-encodePropValue
-    :: PropertyType m param repr => m -> Text -> repr -> Maybe A.Pair
-encodePropValue encoder propName = fmap (propName A..=) . encodeValue encoder
 
 pFromMaybe :: Maybe a -> A.Parser a
 pFromMaybe (Just a) = pure a

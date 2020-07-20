@@ -105,8 +105,7 @@ genComponent GeneratorConfig {..} (SchemaComponent key) = do
         Just objSchema -> objectDecl (mkName key) generatorObjConfig objSchema
 
 data ObjConfig = ObjConfig
-    { objConfigPropType :: String -> Property -> Generator Type
-    , objConfigPropExp :: Property -> Exp
+    { objPropEncoding :: Property -> Name
     }
 
 singE :: Name -> Exp
@@ -135,16 +134,14 @@ objectDecl name config schema@ObjectSchema {..} =
 mkPropField :: ObjConfig -> (String -> String) -> Property -> Generator VarBangType
 mkPropField ObjConfig {..} nameF prop@Property {..} = do
     ty <- makeType name propertySchema
-    let reprTy = AppT (AppT (ConT ''PropRepr) (ConT $ propEncoding prop)) ty
+    let reprTy = AppT (AppT (ConT ''PropRepr) (ConT $ objPropEncoding prop)) ty
     return $ recordField name reprTy
     where name = nameF . T.unpack $ propertyName
 
-propEncoding Property { .. } = if propertyIsRequired then ''RequiredProp else ''OptionalProp
-
 -- TODO: toEncoding implementation
 objectToJSON :: Name -> ObjConfig -> ObjectSchema -> Generator [Dec]
-objectToJSON tyName config ObjectSchema {..} = do
-    pairExps <- return [] -- mapM maybePropPair $ M.elems objectProperties
+objectToJSON tyName ObjConfig {..} ObjectSchema {..} = do
+    let pairExps = map maybePropPair $ M.elems objectProperties
     return
         [ InstanceD Nothing [] (AppT (ConT ''A.ToJSON) (ConT tyName))
             [ FunD 'A.toJSON
@@ -165,14 +162,7 @@ objectToJSON tyName config ObjectSchema {..} = do
                 where propValue = AppE (VarE . mkName . propName . T.unpack $ propertyName) obj
                       name = propName . T.unpack $ propertyName
                       encodePropFn = AppE encodeFn (textLit propertyName)
-                      encodeFn = AppE (VarE 'encodePropValue) (singE $ propEncoding p)
-
-
-            -- maybePropPair p@Property {..} = AppE <$> (AppE (VarE 'encodePropValue) <$> (typedPropExp config name p)) <*> pure propValue
-            -- maybePropPair Property {..} = if propertyIsRequired
-            --     then eJust $ AppE makePairFn (propValue obj)
-            --     else AppE (eApp 'fmap makePairFn) (propValue obj)
-            --     where makePairFn = InfixE (Just $ textLit propertyName) (VarE '(.=)) Nothing
+                      encodeFn = AppE (VarE 'encodePropValue) (singE $ objPropEncoding p)
             --           
 
 objectFromJSON :: Name -> ObjConfig -> ObjectSchema -> [Dec]
@@ -188,7 +178,7 @@ objectFromJSON tyName ObjConfig {..} ObjectSchema {..} =
     where   objName = mkName "o"
             cons = AppE (VarE 'pure) (ConE tyName)
             args = foldl reduceFn cons $ M.elems objectProperties
-            propParser prop = AppE (AppE (AppE (VarE 'retrievePropValue) (singE $ propEncoding prop) ) (textLit $ propertyName prop)) (VarE objName)
+            propParser prop = AppE (AppE (AppE (VarE 'retrievePropValue) (singE $ objPropEncoding prop) ) (textLit $ propertyName prop)) (VarE objName)
             reduceFn l r = UInfixE l (VarE '(<*>)) (propParser r)
 
 
